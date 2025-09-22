@@ -107,6 +107,12 @@
         .modal-overlay.active .modal-content {
             transform: translateY(0);
         }
+
+        @media screen and (max-width: 1024px) {
+            #left-menu.active {
+                transform: translateX(0);
+            }
+        }
         
         .time-input {
             background: #f8fafc;
@@ -227,6 +233,9 @@
     <div class="max-w-6xl mx-auto">
         <header class="flex flex-col md:flex-row gap-4 items-center justify-between mb-6">
             <div class="flex items-center gap-3">
+                <button id="btn-menu" class="icon-btn block lg:hidden">
+                    <i class="fas fa-bars"></i>
+                </button>
                 <div class="bg-indigo-600 text-white p-2 rounded-lg">
                     <i class="fas fa-clock text-xl"></i>
                 </div>
@@ -240,16 +249,12 @@
                     <i class="fas fa-laptop mr-1"></i>
                     <span>Local Mode</span>
                 </div>
-                <button id="debug-sample" class="btn-secondary text-sm px-3 py-1 rounded-md">
-                    <i class="fas fa-bug mr-1"></i>
-                    Sample Data
-                </button>
             </div>
         </header>
 
         <main class="grid grid-cols-1 lg:grid-cols-4 gap-6">
             <!-- Left column controls -->
-            <section class="lg:col-span-1 space-y-6">
+            <section id="left-menu" class="lg:col-span-1 absolute lg:relative max-lg:max-w-[min(400px,90vw)] max-lg:shadow-lg max-lg:w-screen top-0 left-0 bg-white max-lg:max-h-screen max-lg:overflow-y-auto lg:bg-transparent lg:relative -translate-x-full lg:translate-x-0 lg:relative space-y-6 transition-all duration-300">
                 <div class="hr-card p-5">
                     <h2 class="font-semibold text-lg mb-4 flex items-center gap-2">
                         <i class="fas fa-user text-indigo-600"></i>
@@ -682,6 +687,8 @@
         // =====================
         const el = {
             badgeMode: document.getElementById("badge-mode"),
+            btnMenu: document.getElementById("btn-menu"),
+            leftMenu: document.getElementById("left-menu"),
             authArea: document.getElementById("auth-area"),
             btnCloud: document.getElementById("btn-cloud"),
             btnLocal: document.getElementById("btn-local"),
@@ -703,7 +710,6 @@
             rangeSum: document.getElementById("range-sum"),
             optRounding: document.getElementById("opt-rounding"),
             roundMinutes: document.getElementById("round-minutes"),
-            debugSample: document.getElementById("debug-sample"),
             localTz: document.getElementById("local-tz"),
             editModal: document.getElementById("edit-modal"),
             closeModal: document.getElementById("close-modal"),
@@ -868,7 +874,7 @@
                 left.appendChild(note);
 
                 const right = document.createElement("div");
-                right.className = "flex items-center gap-2";
+                right.className = "flex flex-col md:flex-row items-center gap-2";
                 
                 const durMins = entry.startISO && entry.endISO
                     ? durationFromISOs(entry.startISO, entry.endISO)
@@ -902,8 +908,11 @@
                 delBtn.title = "Delete entry";
                 delBtn.onclick = () => deleteEntry(entry.id);
                 
-                right.appendChild(editBtn);
-                right.appendChild(delBtn);
+                const actionsContainer = document.createElement("div");
+                actionsContainer.className = "flex items-center gap-2";
+                actionsContainer.appendChild(editBtn);
+                actionsContainer.appendChild(delBtn);
+                right.appendChild(actionsContainer);
 
                 row.appendChild(left);
                 row.appendChild(right);
@@ -968,6 +977,15 @@
         // UI events wiring
         // =====================
         function wireEvents() {
+            document.body.onclick = (e) => {
+                const shouldClose = !e.target.closest('#left-menu') && !e.target.closest('#btn-menu');
+                if (shouldClose) {
+                    el.leftMenu.classList.remove('active');
+                }
+            };
+            el.btnMenu.onclick = () => {
+                el.leftMenu.classList.toggle('active');
+            };
             el.btnCloud.onclick = () => {
                 if (FIREBASE_CONFIG) {
                     MODE = "cloud";
@@ -1044,9 +1062,6 @@
                 SETTINGS.roundMinutes = parseInt(el.roundMinutes.value);
                 saveLocal();
                 renderDay();
-            };
-            el.debugSample.onclick = () => {
-                populateSample();
             };
             
             // Modal events
@@ -1218,37 +1233,10 @@
                     .doc(id)
                     .set(e);
             }
-            showToast("Local data merged to cloud");
-        }
-
-        // =====================
-        // Sample data
-        // =====================
-        function populateSample() {
-            const d = new Date();
-            const date = d.toISOString().slice(0, 10);
-            const s1 = parseTimeInputToISO(date, "09:00");
-            const e1 = parseTimeInputToISO(date, "11:20");
-            const s2 = parseTimeInputToISO(date, "13:00");
-            const e2 = parseTimeInputToISO(date, "15:00");
             ENTRIES = {};
-            addEntry({
-                id: uid(),
-                date,
-                startISO: s1,
-                endISO: e1,
-                note: "Morning work session",
-            });
-            addEntry({
-                id: uid(),
-                date,
-                startISO: s2,
-                endISO: e2,
-                note: "Afternoon work session",
-            });
             saveLocal();
             renderDay();
-            showToast("Sample data loaded");
+            showToast("Local data merged to cloud");
         }
 
         // =====================
