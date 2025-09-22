@@ -1,0 +1,822 @@
+<!--
+Work Hours Tracker - Single-file HTML
+
+README (top of file):
+1) FIREBASE CONFIG: paste your Firebase config JSON into the FIREBASE_CONFIG placeholder below (between /* FIREBASE CONFIG START / and / FIREBASE CONFIG END */).
+   Example:
+   const FIREBASE_CONFIG = {
+     apiKey: "...",
+     authDomain: "your-app.firebaseapp.com",
+     projectId: "your-app-id",
+     storageBucket: "your-app-id.appspot.com",
+     messagingSenderId: "...",
+     appId: "..."
+   };
+
+2) MODES: If you don't paste a valid Firebase config or choose "Local only", the app will run using localStorage and show a "Local only" badge.
+
+3) AUTH:
+   - Email+Password works on file:// and localhost.
+   - Google Sign-In requires adding the domain to Firebase Auth Authorized domains (e.g., http://localhost) and hosting on HTTPS for production.
+
+4) FIRESTORE RULES (suggested minimal rules - configure in your project):
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      match /entries/{entryId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+  }
+}
+
+5) EXPORT / IMPORT: Export produces CSV; import will merge entries by id (if id missing a new id will be generated).
+
+6) PWA / Service Worker: This single-file app includes an optional toggle and a simple cache-first service worker snippet in comments — registering a service worker requires serving over HTTPS or localhost.
+
+7) DEBUG: toggle "Debug sample data" to populate sample entries locally.
+
+-->
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Work Hours Tracker</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <!-- Firebase (compat libs for simplicity in single-file) -->
+        <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+        <!-- small helper: dayjs for time parsing/format -->
+        <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/timezone.js"></script>
+        <script>
+            dayjs.extend(dayjs_plugin_utc);
+            dayjs.extend(dayjs_plugin_timezone);
+        </script>
+        <style>
+            /* small custom styles */
+            .hr-card {
+                background: white;
+                border-radius: 0.6rem;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+            }
+        </style>
+    </head>
+    <body class="bg-slate-50 text-slate-800 min-h-screen p-4">
+        <div class="max-w-4xl mx-auto">
+            <header class="flex items-center justify-between mb-4">
+                <h1 class="text-2xl font-semibold">Work Hours Tracker</h1>
+                <div class="flex items-center gap-2">
+                    <div
+                        id="badge-mode"
+                        class="text-sm px-2 py-1 rounded-md border"
+                    >
+                        Local
+                    </div>
+                    <button
+                        id="debug-sample"
+                        class="text-xs px-2 py-1 border rounded"
+                    >
+                        Debug sample
+                    </button>
+                </div>
+            </header>
+
+            <main class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Left column controls -->
+                <section class="md:col-span-1 hr-card p-4">
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-xs">Profile</label>
+                            <div id="auth-area" class="mt-2"></div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs">Mode</label>
+                            <div class="mt-2 space-x-2">
+                                <button
+                                    id="btn-cloud"
+                                    class="px-3 py-1 rounded border text-sm"
+                                >
+                                    Cloud
+                                </button>
+                                <button
+                                    id="btn-local"
+                                    class="px-3 py-1 rounded border text-sm"
+                                >
+                                    Local
+                                </button>
+                            </div>
+                            <p class="text-xs text-slate-500 mt-2">
+                                Cloud requires Firebase config. Local uses
+                                localStorage only.
+                            </p>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs">Actions</label>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                <button
+                                    id="btn-export"
+                                    class="px-3 py-1 rounded border text-sm"
+                                >
+                                    Export CSV
+                                </button>
+                                <label
+                                    class="px-3 py-1 rounded border text-sm cursor-pointer"
+                                >
+                                    Import CSV
+                                    <input
+                                        id="csv-import"
+                                        type="file"
+                                        accept="text/csv"
+                                        class="hidden"
+                                    />
+                                </label>
+                                <button
+                                    id="btn-clear-local"
+                                    class="px-3 py-1 rounded border text-sm"
+                                >
+                                    Clear Local
+                                </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs">Range report</label>
+                            <div class="mt-2 grid grid-cols-2 gap-2">
+                                <input
+                                    id="range-from"
+                                    type="date"
+                                    class="px-2 py-1 border rounded"
+                                />
+                                <input
+                                    id="range-to"
+                                    type="date"
+                                    class="px-2 py-1 border rounded"
+                                />
+                            </div>
+                            <button
+                                id="btn-range-sum"
+                                class="mt-2 px-3 py-1 rounded border text-sm"
+                            >
+                                Show sum
+                            </button>
+                            <div
+                                id="range-sum"
+                                class="mt-2 text-sm font-medium"
+                            ></div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs">Settings</label>
+                            <div class="mt-2">
+                                <label class="flex items-center gap-2"
+                                    ><input id="opt-rounding" type="checkbox" />
+                                    Enable rounding</label
+                                >
+                                <select
+                                    id="round-minutes"
+                                    class="mt-2 px-2 py-1 border rounded text-sm"
+                                >
+                                    <option value="5">5 minutes</option>
+                                    <option value="10">10 minutes</option>
+                                    <option value="15" selected>
+                                        15 minutes
+                                    </option>
+                                    <option value="30">30 minutes</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Middle: Day view -->
+                <section class="md:col-span-2 hr-card p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <button
+                                id="prev-day"
+                                class="px-2 py-1 rounded border"
+                            >
+                                ◀
+                            </button>
+                            <input
+                                id="current-date"
+                                type="date"
+                                class="px-2 py-1 border rounded"
+                            />
+                            <button
+                                id="next-day"
+                                class="px-2 py-1 rounded border"
+                            >
+                                ▶
+                            </button>
+                        </div>
+                        <div class="text-sm text-slate-600" id="local-tz"></div>
+                    </div>
+
+                    <div id="day-sum" class="text-lg font-semibold mb-2"></div>
+
+                    <div id="segments-list" class="space-y-2"></div>
+
+                    <hr class="my-3" />
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <input
+                            id="input-start"
+                            type="time"
+                            class="px-2 py-1 border rounded"
+                        />
+                        <input
+                            id="input-end"
+                            type="time"
+                            class="px-2 py-1 border rounded"
+                        />
+                        <div class="flex gap-2">
+                            <button
+                                id="btn-now"
+                                class="px-2 py-1 rounded border"
+                            >
+                                Now
+                            </button>
+                            <button
+                                id="btn-add"
+                                class="px-2 py-1 rounded bg-slate-800 text-white"
+                            >
+                                Add
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="mt-2 text-xs text-slate-500">
+                        Tip: leave end empty to create an open segment you can
+                        close later.
+                    </div>
+                </section>
+            </main>
+
+            <footer class="mt-4 text-xs text-slate-500">
+                Times stored in UTC; displayed in your local timezone. Export
+                CSV for backups.
+            </footer>
+        </div>
+
+        <!-- Minimal toast area -->
+        <div id="toast" class="fixed right-4 bottom-4"></div>
+
+        <script>
+            // =====================
+            // CONFIG PLACEHOLDERS
+            // =====================
+
+            // FIREBASE CONFIG: paste your config below. If left null the app will default to Local mode.
+            /* FIREBASE CONFIG START */
+            const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyAmoZvYaoJa7JlORi9LbmCWoIe4QlsdgYc",
+            authDomain: "work-hours-tracker-3d494.firebaseapp.com",
+            projectId: "work-hours-tracker-3d494",
+            storageBucket: "work-hours-tracker-3d494.firebasestorage.app",
+            messagingSenderId: "416076479037",
+            appId: "1:416076479037:web:1a5eec5328bae605004854",
+            measurementId: "G-C9X5VQHPGT"
+            };
+            /* FIREBASE CONFIG END */
+
+            // localStorage keys
+            const STORAGE_KEY = 'workhours_local_entries_v1';
+            const STORAGE_SETTINGS = 'workhours_local_settings_v1';
+
+            // =====================
+            // Utility helpers
+            // =====================
+            function uid() {
+            return 'id_' + Math.random().toString(36).slice(2, 9);
+            }
+            function nowISOUTC() {
+            return new Date().toISOString();
+            }
+
+            function showToast(msg, timeout = 3500) {
+            const t = document.createElement('div');
+            t.className = 'px-4 py-2 bg-slate-800 text-white rounded mb-2 shadow';
+            t.textContent = msg;
+            document.getElementById('toast').appendChild(t);
+            setTimeout(()=> t.remove(), timeout);
+            }
+
+            function parseTimeInputToISO(localDate, timeStr, endsNextDay = false) {
+            if (!timeStr) return null;
+            // timeStr like 08:30 or 3:00 -> ensure two-digit
+            const [hh,
+            mm] = timeStr.split(':');
+            const H = hh.padStart(2, '0');
+            const M = (mm || '00').padStart(2, '0');
+            // create local datetime then convert to UTC ISO
+            const local = new Date(localDate + 'T' + H + ':' + M + ':00');
+            if (endsNextDay) local.setDate(local.getDate()+1);
+            return new Date(local.getTime() - (local.getTimezoneOffset()*60000)).toISOString();
+            }
+
+            function isoToLocalTimeStr(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            return hh + ':' + mm;
+            }
+
+            function durationFromISOs(startISO, endISO) {
+            if (!startISO || !endISO) return null;
+            const s = new Date(startISO).getTime();
+            const e = new Date(endISO).getTime();
+            let diff = Math.round((e - s) / 60000); // minutes
+            return diff; // minutes
+            }
+
+            function formatMinutes(mins) {
+            const h = Math.floor(mins/60);
+            const m = Math.abs(mins % 60);
+            return `${h}h ${String(m).padStart(2, '0')}m`;
+            }
+
+            function roundTo(minutes, roundTo) {
+            if (!roundTo) return minutes;
+            return Math.round(minutes / roundTo) * roundTo;
+            }
+
+            // =====================
+            // App State
+            // =====================
+            let MODE = FIREBASE_CONFIG ? 'cloud': 'local'; // 'local' or 'cloud'
+            let currentUser = null; // {uid, email}
+            let db = null;
+            let auth = null;
+            let unsubscribeEntries = null;
+
+            // In-memory cache of entries keyed by id
+            let ENTRIES = {}; // { id: entry }
+            let SETTINGS = {
+            roundingEnabled: true,
+            roundMinutes: 15
+            };
+
+            // =====================
+            // Persistence: localStorage
+            // =====================
+            function loadLocal() {
+            try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            const parsed = raw ? JSON.parse(raw): [];
+            ENTRIES = {};
+            parsed.forEach(e => ENTRIES[e.id] = e);
+            const sraw = localStorage.getItem(STORAGE_SETTINGS);
+            if (sraw) SETTINGS = JSON.parse(sraw);
+            } catch(err) {
+            console.error(err);
+            }
+            }
+            function saveLocal() {
+            const list = Object.values(ENTRIES);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+            localStorage.setItem(STORAGE_SETTINGS, JSON.stringify(SETTINGS));
+            }
+
+            // =====================
+            // Firestore helpers
+            // =====================
+            function initFirebase() {
+            if (!FIREBASE_CONFIG) return null;
+            try {
+            firebase.initializeApp(FIREBASE_CONFIG);
+            auth = firebase.auth();
+            db = firebase.firestore();
+            return {
+            auth,
+            db
+            };
+            } catch(err) {
+            console.error('Firebase init failed', err); return null;
+            }
+            }
+
+            async function subscribeCloudEntries(uid) {
+            if (!db) return;
+            if (unsubscribeEntries) unsubscribeEntries();
+            const col = db.collection('users').doc(uid).collection('entries');
+            unsubscribeEntries = col.onSnapshot(snap => {
+            snap.docChanges().forEach(ch => {
+            const data = ch.doc.data();
+            data.id = ch.doc.id;
+            if (ch.type === 'removed') {
+            delete ENTRIES[data.id];
+            } else ENTRIES[data.id] = data;
+            });
+            renderDay();
+            });
+            }
+
+            async function uploadEntryToCloud(uid, entry) {
+            const col = db.collection('users').doc(uid).collection('entries');
+            const id = entry.id || uid + '_' + uid();
+            entry.modifiedAt = firebase.firestore.FieldValue.serverTimestamp ? firebase.firestore.FieldValue.serverTimestamp(): new Date().toISOString();
+            try {
+            await col.doc(id).set(entry, {
+            merge: true
+            });
+            } catch(err) {
+            console.error('upload failed', err);
+            }
+            }
+
+            async function deleteEntryFromCloud(uid, id) {
+            try {
+            await db.collection('users').doc(uid).collection('entries').doc(id).delete();
+            } catch(e) {
+            console.error(e);
+            }
+            }
+
+            // =====================
+            // UI rendering & interactions
+            // =====================
+            const el = {
+            badgeMode: document.getElementById('badge-mode'),
+            authArea: document.getElementById('auth-area'),
+            btnCloud: document.getElementById('btn-cloud'),
+            btnLocal: document.getElementById('btn-local'),
+            btnExport: document.getElementById('btn-export'),
+            csvImport: document.getElementById('csv-import'),
+            btnClearLocal: document.getElementById('btn-clear-local'),
+            currentDate: document.getElementById('current-date'),
+            prevDay: document.getElementById('prev-day'),
+            nextDay: document.getElementById('next-day'),
+            segmentsList: document.getElementById('segments-list'),
+            daySum: document.getElementById('day-sum'),
+            inputStart: document.getElementById('input-start'),
+            inputEnd: document.getElementById('input-end'),
+            btnAdd: document.getElementById('btn-add'),
+            btnNow: document.getElementById('btn-now'),
+            btnRangeSum: document.getElementById('btn-range-sum'),
+            rangeFrom: document.getElementById('range-from'),
+            rangeTo: document.getElementById('range-to'),
+            rangeSum: document.getElementById('range-sum'),
+            optRounding: document.getElementById('opt-rounding'),
+            roundMinutes: document.getElementById('round-minutes'),
+            debugSample: document.getElementById('debug-sample'),
+            localTz: document.getElementById('local-tz')
+            };
+
+            function updateModeBadge() {
+            el.badgeMode.textContent = MODE === 'cloud' ? (currentUser ? ('Cloud: ' + (currentUser.email || currentUser.uid)): 'Cloud (not signed)'): 'Local only';
+            }
+
+            function renderAuthArea() {
+            el.authArea.innerHTML = '';
+            if (MODE === 'cloud') {
+            if (!auth) {
+            el.authArea.innerHTML = '<div class="text-xs text-red-600">Firebase not configured.</div>'; return;
+            }
+            if (!currentUser) {
+            const emailIn = document.createElement('input'); emailIn.placeholder = 'Email'; emailIn.className = 'px-2 py-1 border rounded w-full mb-2';
+            const passIn = document.createElement('input'); passIn.type = 'password'; passIn.placeholder = 'Password'; passIn.className = 'px-2 py-1 border rounded w-full mb-2';
+            const btnSign = document.createElement('button'); btnSign.textContent = 'Sign in / Register'; btnSign.className = 'px-3 py-1 rounded border w-full';
+            const gbtn = document.createElement('button'); gbtn.textContent = 'Sign in with Google'; gbtn.className = 'mt-2 px-3 py-1 rounded border w-full';
+            btnSign.onclick = async ()=> {
+            try {
+            const res = await auth.signInWithEmailAndPassword(emailIn.value, passIn.value).catch(async (err)=> {
+            if (err.code === 'auth/user-not-found') {
+            await auth.createUserWithEmailAndPassword(emailIn.value, passIn.value);
+            showToast('Registered.');
+            } else {
+            throw err;
+            }
+            });
+            } catch(e) {
+            showToast((e.message || e.code) + ''); console.error(e);
+            }
+            };
+            gbtn.onclick = async ()=> {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            try {
+            await auth.signInWithPopup(provider);
+            } catch(e) {
+            showToast(e.message || e.code);
+            }
+            };
+            el.authArea.appendChild(emailIn); el.authArea.appendChild(passIn); el.authArea.appendChild(btnSign); el.authArea.appendChild(gbtn);
+            } else {
+            const p = document.createElement('div'); p.textContent = currentUser.email || currentUser.uid; p.className = 'text-sm mb-2';
+            const btnOut = document.createElement('button'); btnOut.textContent = 'Sign out'; btnOut.className = 'px-3 py-1 rounded border';
+            btnOut.onclick = ()=> auth.signOut();
+            el.authArea.appendChild(p); el.authArea.appendChild(btnOut);
+            }
+            } else {
+            el.authArea.innerHTML = '<div class="text-xs text-slate-600">Local mode. Data stored with localStorage.</div>';
+            }
+            }
+
+            function renderDay() {
+            const dateStr = el.currentDate.value;
+            if (!dateStr) return;
+            // filter entries for the date
+            const list = Object.values(ENTRIES).filter(e => e.date === dateStr).sort((a, b)=> (a.startISO || '') > (b.startISO || '') ? 1: -1);
+            el.segmentsList.innerHTML = '';
+            let total = 0;
+            list.forEach(entry => {
+            const row = document.createElement('div'); row.className = 'p-2 border rounded flex items-center justify-between';
+            const left = document.createElement('div'); left.className = 'flex flex-col';
+            const times = document.createElement('div'); times.className = 'text-sm';
+            const startStr = isoToLocalTimeStr(entry.startISO);
+            const endStr = entry.endISO ? isoToLocalTimeStr(entry.endISO): '—';
+            times.textContent = `${startStr} → ${endStr}`;
+            const note = document.createElement('div'); note.className = 'text-xs text-slate-500'; note.textContent = entry.note || '';
+            left.appendChild(times); left.appendChild(note);
+
+            const right = document.createElement('div'); right.className = 'flex items-center gap-2';
+            const durMins = entry.startISO && entry.endISO ? durationFromISOs(entry.startISO, entry.endISO): null;
+            if (durMins !== null) {
+            const rmins = SETTINGS.roundingEnabled ? roundTo(durMins, SETTINGS.roundMinutes): durMins;
+            total += rmins;
+            const dspan = document.createElement('div'); dspan.className = 'text-sm font-medium'; dspan.textContent = formatMinutes(rmins);
+            right.appendChild(dspan);
+            }
+            const edit = document.createElement('button'); edit.textContent = 'Edit'; edit.className = 'px-2 py-1 rounded border text-xs';
+            edit.onclick = ()=> editEntry(entry);
+            const del = document.createElement('button'); del.textContent = 'Delete'; del.className = 'px-2 py-1 rounded border text-xs';
+            del.onclick = ()=> deleteEntry(entry.id);
+            right.appendChild(edit); right.appendChild(del);
+
+            row.appendChild(left); row.appendChild(right);
+            el.segmentsList.appendChild(row);
+            });
+            el.daySum.textContent = 'Day total: ' + formatMinutes(total);
+            }
+
+            // =====================
+            // CRUD
+            // =====================
+            function addEntry(entry) {
+            entry.id = entry.id || uid();
+            entry.createdAt = entry.createdAt || nowISOUTC();
+            entry.modifiedAt = nowISOUTC();
+            ENTRIES[entry.id] = entry;
+            if (MODE === 'cloud' && currentUser && db) {
+            uploadEntryToCloud(currentUser.uid, entry);
+            } else saveLocal();
+            renderDay();
+            }
+
+            function editEntry(entry) {
+            // simple prompt-based edit for brevity
+            const s = isoToLocalTimeStr(entry.startISO);
+            const e = isoToLocalTimeStr(entry.endISO);
+            const newS = prompt('Start time (HH:MM)', s) || s;
+            const newE = prompt('End time (HH:MM or empty)', e) || e;
+            const note = prompt('Note', entry.note || '') || entry.note || '';
+            entry.startISO = parseTimeInputToISO(entry.date, newS);
+            entry.endISO = newE ? parseTimeInputToISO(entry.date, newE): null;
+            entry.note = note;
+            entry.modifiedAt = nowISOUTC();
+            ENTRIES[entry.id] = entry;
+            if (MODE === 'cloud' && currentUser) uploadEntryToCloud(currentUser.uid, entry); else saveLocal();
+            renderDay();
+            }
+
+            function deleteEntry(id) {
+            if (!confirm('Delete entry?')) return;
+            if (MODE === 'cloud' && currentUser && db) {
+            deleteEntryFromCloud(currentUser.uid, id);
+            } else {
+            delete ENTRIES[id]; saveLocal(); renderDay();
+            }
+            }
+
+            // =====================
+            // UI events wiring
+            // =====================
+            function wireEvents() {
+            el.btnCloud.onclick = ()=> {
+            if (FIREBASE_CONFIG) {
+            MODE = 'cloud'; initFirebase(); renderAuthArea(); updateModeBadge();
+            } else {
+            showToast('No Firebase config. Paste config at top.');
+            }};
+            el.btnLocal.onclick = ()=> {
+            MODE = 'local'; renderAuthArea(); updateModeBadge(); loadLocal(); renderDay();
+            };
+            el.btnExport.onclick = ()=> exportCSV();
+            el.csvImport.onchange = (ev)=> importCSV(ev.target.files[0]);
+            el.btnClearLocal.onclick = ()=> {
+            if (confirm('Clear local entries?')) {
+            ENTRIES = {}; saveLocal(); renderDay();
+            }};
+            el.prevDay.onclick = ()=> {
+            changeDayBy(-1);
+            };
+            el.nextDay.onclick = ()=> {
+            changeDayBy(1);
+            };
+            el.currentDate.onchange = ()=> renderDay();
+            el.btnAdd.onclick = ()=> {
+            const date = el.currentDate.value;
+            if (!date) {
+            showToast('Pick a date.'); return;
+            }
+            const startT = el.inputStart.value;
+            const endT = el.inputEnd.value;
+            const entry = {
+            date,
+            startISO: startT ? parseTimeInputToISO(date, startT): null,
+            endISO: endT ? parseTimeInputToISO(date, endT): null,
+            note: '',
+            createdAt: nowISOUTC(),
+            modifiedAt: nowISOUTC()
+            };
+            addEntry(entry);
+            el.inputStart.value = '';
+            el.inputEnd.value = '';
+            };
+            el.btnNow.onclick = ()=> {
+            const t = new Date(); const hh = String(t.getHours()).padStart(2, '0'); const mm = String(t.getMinutes()).padStart(2, '0'); el.inputStart.value = hh + ':' + mm;
+            };
+            el.btnRangeSum.onclick = ()=> {
+            showRangeSum();
+            };
+            el.optRounding.onchange = ()=> {
+            SETTINGS.roundingEnabled = el.optRounding.checked; saveLocal(); renderDay();
+            };
+            el.roundMinutes.onchange = ()=> {
+            SETTINGS.roundMinutes = parseInt(el.roundMinutes.value); saveLocal(); renderDay();
+            };
+            el.debugSample.onclick = ()=> {
+            populateSample();
+            };
+            }
+
+            function changeDayBy(delta) {
+            const cur = el.currentDate.value ? new Date(el.currentDate.value): new Date();
+            cur.setDate(cur.getDate() + delta);
+            el.currentDate.value = cur.toISOString().slice(0, 10);
+            renderDay();
+            }
+
+            // =====================
+            // Reports & CSV
+            // =====================
+            function showRangeSum() {
+            const from = el.rangeFrom.value; const to = el.rangeTo.value;
+            if (!from || !to) {
+            showToast('Pick both dates'); return;
+            }
+            const start = new Date(from); const end = new Date(to); end.setHours(23, 59, 59, 999);
+            const items = Object.values(ENTRIES).filter(e => {
+            const d = new Date(e.date + 'T00:00:00');
+            return d >= start && d <= end;
+            });
+            let total = 0;
+            items.forEach(it => {
+            if (it.startISO && it.endISO) {
+            let m = durationFromISOs(it.startISO, it.endISO);
+            if (SETTINGS.roundingEnabled) m = roundTo(m, SETTINGS.roundMinutes);
+            total += m;
+            }
+            });
+            el.rangeSum.textContent = 'Total: ' + formatMinutes(total);
+            }
+
+            function exportCSV() {
+            const rows = ['id,date,startISO,endISO,duration_minutes,duration_hhmm,note'];
+            Object.values(ENTRIES).forEach(e => {
+            const dur = e.startISO && e.endISO ? durationFromISOs(e.startISO, e.endISO): '';
+            const durStr = dur ? formatMinutes(dur): '';
+            rows.push([e.id, e.date, e.startISO || '', e.endISO || '', dur || '', durStr, '"'+(e.note || '')+'"'].join(','));
+            });
+            const blob = new Blob([rows.join('\n')],
+            {
+            type: 'text/csv'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'workhours_export.csv'; a.click(); URL.revokeObjectURL(url);
+            showToast('CSV exported');
+            }
+
+            function importCSV(file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e)=> {
+            const text = e.target.result;
+            const lines = text.split(/\r?\n/).filter(Boolean);
+            const header = lines.shift();
+            lines.forEach(line => {
+            const cols = line.split(/,(?=(?:[^"]"[^"]")[^"]$)/); // naive CSV split
+            const id = cols[0] || uid();
+            const date = cols[1] || '';
+            const startISO = cols[2] || null;
+            const endISO = cols[3] || null;
+            const note = (cols[6] || '').replace(/^"|"$/g, '');
+            const entry = {
+            id, date, startISO, endISO, note, createdAt: nowISOUTC(), modifiedAt: nowISOUTC()
+            };
+            ENTRIES[id] = entry;
+            if (MODE === 'cloud' && currentUser && db) uploadEntryToCloud(currentUser.uid, entry);
+            });
+            saveLocal(); renderDay(); showToast('Imported CSV');
+            };
+            reader.readAsText(file);
+            }
+
+            // =====================
+            // Sync & merge local-to-cloud on first sign-in
+            // =====================
+            async function mergeLocalToCloud(uid) {
+            if (!db) return;
+            const localList = Object.values(ENTRIES);
+            if (!localList.length) return;
+            if (!confirm('Local data detected. Merge into cloud? (Cancel to keep separate)')) return;
+            for (const e of localList) {
+            const id = e.id || uid + '_' + uid();
+            await db.collection('users').doc(uid).collection('entries').doc(id).set(e);
+            }
+            showToast('Merged local to cloud');
+            }
+
+            // =====================
+            // Sample data
+            // =====================
+            function populateSample() {
+            const d = new Date(); const date = d.toISOString().slice(0, 10);
+            const s1 = parseTimeInputToISO(date, '09:00');
+            const e1 = parseTimeInputToISO(date, '11:20');
+            const s2 = parseTimeInputToISO(date, '13:00');
+            const e2 = parseTimeInputToISO(date, '15:00');
+            ENTRIES = {};
+            addEntry({
+            id: uid(), date, startISO: s1, endISO: e1, note: 'Morning work'
+            });
+            addEntry({
+            id: uid(), date, startISO: s2, endISO: e2, note: 'Afternoon work'
+            });
+            saveLocal(); renderDay();
+            }
+
+            // =====================
+            // Init App
+            // =====================
+            function initUI() {
+            loadLocal();
+            wireEvents();
+            el.localTz.textContent = 'Timezone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
+            if (!el.currentDate.value) el.currentDate.value = new Date().toISOString().slice(0, 10);
+            el.rangeFrom.value = new Date().toISOString().slice(0, 10);
+            el.rangeTo.value = new Date().toISOString().slice(0, 10);
+            el.optRounding.checked = SETTINGS.roundingEnabled;
+            el.roundMinutes.value = SETTINGS.roundMinutes;
+            updateModeBadge();
+            renderAuthArea();
+            renderDay();
+            }
+
+            // Firebase auth state handling
+            function setupFirebaseAuthHandlers() {
+            if (!auth) return;
+            auth.onAuthStateChanged(async (u)=> {
+            if (u) {
+            currentUser = {
+            uid: u.uid,
+            email: u.email
+            };
+            // merge if local data exists
+            if (Object.keys(ENTRIES).length) await mergeLocalToCloud(u.uid);
+            // load cloud entries into ENTRIES
+            ENTRIES = {};
+            subscribeCloudEntries(u.uid);
+            } else {
+            currentUser = null;
+            if (unsubscribeEntries) {
+            unsubscribeEntries(); unsubscribeEntries = null;
+            }
+            // fallback to local
+            loadLocal(); renderDay();
+            }
+            renderAuthArea(); updateModeBadge();
+            });
+            }
+
+            // When uploading, we set timestamps but for local we use nowISOUTC
+            initUI();
+            if (FIREBASE_CONFIG) {
+            const fb = initFirebase();
+            if (fb) {
+            auth = fb.auth; db = fb.db; setupFirebaseAuthHandlers();
+            }
+            }
+        </script>
+    </body>
+</html>
